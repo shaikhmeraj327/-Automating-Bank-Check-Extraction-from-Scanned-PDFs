@@ -1,0 +1,96 @@
+!pip install PyPDF2
+!pip install opencv-python
+!pip install pytesseract
+!pip install tifffile
+!pip install glymur
+
+import PyPDF2
+import io
+from PIL import Image
+import cv2
+import numpy as np
+import os
+import pytesseract
+import re
+import tifffile
+import glymur
+
+def extract_check_images(pdf_path, output_dir="extracted_checks"):
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            num_pages = len(pdf_reader.pages)
+
+            print(f"Processing PDF: {pdf_path}")
+            print(f"Total pages: {num_pages}")
+
+            for page_num in range(num_pages):
+                page = pdf_reader.pages[page_num]
+                xObject = page['/Resources'].get('/XObject', {})
+
+                print(f"Processing page {page_num + 1}...")
+
+                for obj in xObject:
+                    if xObject[obj]['/Subtype'] == '/Image':
+                        try:
+                            size = (xObject[obj]['/Width'], xObject[obj]['/Height'])
+                            data = xObject[obj]._data
+                            filters = xObject[obj].get('/Filter', [])
+                            if isinstance(filters, str):
+                                filters = [filters]
+
+                            # Try different image formats and decoders
+                            img = None
+                            if '/FlateDecode' in filters or '/DCTDecode' in filters:
+                                try:
+                                    img = Image.open(io.BytesIO(data))
+                                except:
+                                    try:
+                                        img = Image.open(io.BytesIO(data)).convert('RGB')
+                                    except:
+                                        print(f"Skipping image (JPEG and PNG decode failed): {obj}")
+                                        continue
+                            elif '/CCITTFaxDecode' in filters:
+                                try:
+                                    img = Image.fromarray(tifffile.imread(io.BytesIO(data)))
+                                except Exception as e:
+                                    print(f"Error decoding TIFF image: {e}")
+                                    continue
+                            elif '/JPXDecode' in filters:
+                                try:
+                                    jp2 = glymur.Jp2k(io.BytesIO(data))
+                                    img = Image.fromarray(jp2[:])
+                                except Exception as e:
+                                    print(f"Error decoding JPEG2000 image: {e}")
+                                    continue
+                            else:
+                                print(f"Skipping image with unsupported filter: {xObject[obj]['/Filter']}")
+                                continue
+
+                            if img:
+                                # Basic image quality enhancement
+                                img_np = np.array(img)
+                                img_enhanced = cv2.fastNlMeansDenoisingColored(img_np, None, 10, 10, 7, 21)
+                                img_enhanced = Image.fromarray(img_enhanced)
+
+                                # Save extracted check image
+                                img_path = os.path.join(output_dir, f'check_{page_num + 1}_{obj[1:]}.png')
+                                img_enhanced.save(img_path)
+                                print(f"Saved image: {img_path}")
+
+                        except Exception as e:
+                            print(f"Error extracting image from page {page_num + 1}, object {obj}: {e}")
+
+                if not any(xObject[obj]['/Subtype'] == '/Image' for obj in xObject):
+                    print(f"No images found on page {page_num + 1}")
+
+    except PyPDF2.errors.PdfReadError as e:
+        print(f"Error reading PDF file: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+# Example usage:
+pdf_file_path = "Python.pdf"
+extract_check_images(pdf_file_path)
